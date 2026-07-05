@@ -147,25 +147,30 @@ public class SyncEngine
         {
             var url = $"{_config.ServerUrl}/api/files/changes?since={_lastSyncTime}";
             var response = await _httpClient.GetAsync(url);
-            
+
             if (response.IsSuccessStatusCode)
             {
                 var json = await response.Content.ReadAsStringAsync();
-                var result = JsonSerializer.Deserialize<Dictionary<string, object>>(json);
-                
-                if (result != null && result.TryGetValue("changes", out var changesObj))
-                {
-                    var changesJson = changesObj.ToString();
-                    return JsonSerializer.Deserialize<List<FileChange>>(changesJson) ?? new List<FileChange>();
-                }
+                var result = JsonSerializer.Deserialize<ChangesResponse>(json, JsonOptions);
+                return result?.Changes ?? new List<FileChange>();
             }
         }
         catch (Exception ex)
         {
             _logger($"Ошибка получения изменений: {ex.Message}");
         }
-        
+
         return new List<FileChange>();
+    }
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    private class ChangesResponse
+    {
+        public List<FileChange> Changes { get; set; } = new();
     }
 
     public async Task ApplyServerChange(FileChange change)
@@ -182,6 +187,10 @@ public class SyncEngine
             {
                 case "upload":
                 case "ready":
+                case "waiting":
+                    if (change.Action == "waiting")
+                        break;
+
                     if (!File.Exists(localPath) || GetFileHash(localPath) != change.Hash)
                     {
                         await DownloadFile(change.Path, localPath);
@@ -414,17 +423,21 @@ public class SyncEngine
             
             if (response.IsSuccessStatusCode)
             {
-                var result = JsonSerializer.Deserialize<Dictionary<string, object>>(
-                    await response.Content.ReadAsStringAsync());
-                
-                var syncStatus = result?.GetValueOrDefault("sync_status")?.ToString() ?? "ready";
+                var result = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                    await response.Content.ReadAsStringAsync(), JsonOptions);
+
+                var syncStatus = "ready";
+                if (result != null && result.TryGetValue("sync_status", out var statusElement))
+                    syncStatus = statusElement.GetString() ?? "ready";
                 
                 if (syncStatus == "waiting")
                 {
                     // Добавляем в очередь
                     var queueItem = new SyncQueueItem
                     {
-                        Id = result?["file_id"]?.ToString() ?? Guid.NewGuid().ToString(),
+                        Id = result != null && result.TryGetValue("file_id", out var fileIdElement)
+                            ? fileIdElement.GetString() ?? Guid.NewGuid().ToString()
+                            : Guid.NewGuid().ToString(),
                         FilePath = relativePath,
                         LocalPath = localPath,
                         Priority = GetFilePriority(relativePath),
@@ -485,7 +498,7 @@ public class SyncEngine
                     try
                     {
                         var response = await _httpClient.GetAsync(
-                            $"{_config.ServerUrl}/api/files/check?path={dataFile}");
+                            $"{_config.ServerUrl}/api/files/check?path={Uri.EscapeDataString(dataFile.TrimStart('/'))}");
                         var exists = await response.Content.ReadAsStringAsync();
                         if (exists != "true")
                         {
@@ -577,9 +590,9 @@ public class SyncEngine
     {
         try
         {
-            using var md5 = MD5.Create();
+            using var sha256 = SHA256.Create();
             using var stream = File.OpenRead(filePath);
-            var hash = md5.ComputeHash(stream);
+            var hash = sha256.ComputeHash(stream);
             return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
         }
         catch

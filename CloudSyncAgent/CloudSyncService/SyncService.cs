@@ -167,11 +167,28 @@ public class SyncService : ServiceBase
     {
         try
         {
-            var change = JsonSerializer.Deserialize<FileChange>(message);
-            if (change != null)
+            using var doc = JsonDocument.Parse(message);
+            var root = doc.RootElement;
+
+            JsonElement changeElement;
+            if (root.TryGetProperty("change", out changeElement))
+            {
+                // { type: "file_change", change: { ... } }
+            }
+            else if (root.TryGetProperty("type", out var typeElement) &&
+                     typeElement.GetString() is "latest_changes" or "changes")
+            {
+                return;
+            }
+            else
+            {
+                changeElement = root;
+            }
+
+            var change = changeElement.Deserialize<FileChange>(JsonOptions);
+            if (change != null && !string.IsNullOrEmpty(change.Action) && change.Action != "waiting")
             {
                 Log($"WebSocket сообщение: {change.Action} - {change.Path}");
-                // Обработка входящих изменений
                 _ = Task.Run(() => _syncEngine.ApplyServerChange(change));
             }
         }
@@ -180,6 +197,11 @@ public class SyncService : ServiceBase
             Log($"Ошибка обработки WebSocket сообщения: {ex.Message}");
         }
     }
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     private void Log(string message)
     {

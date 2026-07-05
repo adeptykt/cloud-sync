@@ -66,6 +66,19 @@ cloud-sync/
 └── server/             # Node.js сервер
 ```
 
+## API
+
+Клиент использует эндпоинты `/api/files/*` (алиасы `/api/user/*`):
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| POST | `/api/auth/login` | Аутентификация |
+| GET | `/api/files/changes?since=` | Изменения с timestamp |
+| GET | `/api/files/check?path=` | Проверка наличия файла (`true`/`false`) |
+| POST | `/api/files/upload` | Загрузка (`file`, `filePath`) |
+| GET | `/api/files/download/*` | Скачивание |
+| DELETE | `/api/files/delete/*` | Удаление |
+
 ## Разработка
 
 - .NET 8 SDK (Windows)

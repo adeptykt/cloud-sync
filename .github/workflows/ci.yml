@@ -23,7 +23,7 @@ jobs:
       - run: npm install
       - run: node --check server.js
       - run: node --check websocket-server.js
-      - run: node --check config.js
+      - run: node --check file-api.js
 
   agent:
     name: Agent (.NET)

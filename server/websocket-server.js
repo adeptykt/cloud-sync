@@ -518,6 +518,46 @@ class WebSocketServer {
 
     // ============= УПРАВЛЕНИЕ СОЕДИНЕНИЯМИ =============
 
+    handlePing(clientId, message) {
+        this.sendToClient(clientId, {
+            type: 'pong',
+            timestamp: Date.now(),
+            clientTimestamp: message.timestamp
+        });
+    }
+
+    async handleSubscribe(clientId, message) {
+        const client = this.clients.get(clientId);
+        if (!client || !client.authenticated) return;
+
+        const roomId = message.room || message.userId || client.userId;
+        if (!this.rooms.has(roomId)) {
+            this.rooms.set(roomId, new Set());
+        }
+        this.rooms.get(roomId).add(clientId);
+        this.sendToClient(clientId, { type: 'subscribed', room: roomId });
+    }
+
+    async handleUnsubscribe(clientId, message) {
+        const roomId = message.room;
+        if (roomId && this.rooms.has(roomId)) {
+            this.rooms.get(roomId).delete(clientId);
+        }
+        this.sendToClient(clientId, { type: 'unsubscribed', room: roomId });
+    }
+
+    async handleSync(clientId, message) {
+        await this.handleGetChanges(clientId, message);
+    }
+
+    async handleFileDownloaded(clientId, message) {
+        this.sendToClient(clientId, {
+            type: 'ack',
+            path: message.path,
+            timestamp: Date.now()
+        });
+    }
+
     handleDisconnect(clientId) {
         const client = this.clients.get(clientId);
         if (!client) return;
