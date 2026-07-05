@@ -69,3 +69,21 @@ public class SyncQueueItem
     public int RetryCount { get; set; }
     public DateTime CreatedAt { get; set; }
 }
+
+public class ServerSyncRulesDocument
+{
+    public List<ServerOrderGroup> OrderGroups { get; set; } = new();
+    public string DefaultBehavior { get; set; } = "immediate";
+    public string ConflictResolution { get; set; } = "newest_wins";
+}
+
+public class ServerOrderGroup
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Pattern { get; set; } = "";
+    public string Action { get; set; } = "";
+    public List<string> Order { get; set; } = new();
+    public List<string> Files { get; set; } = new();
+    public string Description { get; set; } = "";
+}

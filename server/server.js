@@ -1,47 +1,58 @@
 const express = require('express');
 const multer = require('multer');
+const http = require('http');
+const https = require('https');
+const fs = require('fs-extra');
+const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
 const morgan = require('morgan');
-const fs = require('fs-extra');
-const path = require('path');
+const rateLimit = require('express-rate-limit');
 const config = require('./config');
 const { open } = require('sqlite');
 const sqlite3 = require('sqlite3');
-const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const WebSocketServer = require('./websocket-server');
 const { registerFileRoutes } = require('./file-api');
 
 const app = express();
-const PORT = config.port || 3000;
+const PORT = config.port;
+
+if (config.trustProxy) {
+    app.set('trust proxy', 1);
+}
 
 app.use(cors());
-app.use(morgan('combined'));
+app.use(morgan(config.nodeEnv === 'production' ? 'combined' : 'dev'));
 app.use(express.json());
 
 fs.ensureDirSync(config.storage.files);
 fs.ensureDirSync(config.storage.temp);
 
-let syncRules = {};
-try {
-    syncRules = require(config.syncRules);
-} catch (error) {
-    console.warn('⚠️ Правила синхронизации не найдены, используются стандартные');
-    syncRules = {
-        orderGroups: [],
-        defaultBehavior: 'immediate',
-        conflictResolution: 'newest_wins'
-    };
+let syncRules = config.loadSyncRules();
+const getSyncRules = () => syncRules;
+
+function reloadSyncRules() {
+    syncRules = config.loadSyncRules();
+    return syncRules;
 }
 
 let db;
 let wsServer;
+let serverStartedAt = Date.now();
 
 const upload = multer({
     dest: config.storage.temp,
     limits: { fileSize: config.maxFileSize }
+});
+
+const authRateLimiter = rateLimit({
+    windowMs: config.rateLimit.authWindowMs,
+    max: config.rateLimit.authMax,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Слишком много попыток, повторите позже' }
 });
 
 async function initDatabase() {
@@ -127,9 +138,37 @@ async function initDatabase() {
     console.log('✓ База данных инициализирована');
 }
 
-app.post('/api/auth/register', async (req, res) => {
+app.get('/api/health', async (req, res) => {
+    let dbOk = false;
+    if (db) {
+        try {
+            await db.get('SELECT 1');
+            dbOk = true;
+        } catch {
+            dbOk = false;
+        }
+    }
+
+    const wsStats = wsServer ? wsServer.getStats() : null;
+    const healthy = dbOk;
+    res.status(healthy ? 200 : 503).json({
+        status: healthy ? 'ok' : 'degraded',
+        uptime_seconds: Math.floor(process.uptime()),
+        started_at: serverStartedAt,
+        database: dbOk ? 'connected' : 'error',
+        websocket: wsStats
+            ? { port: config.wsPort, clients: wsStats.totalClients }
+            : { port: config.wsPort, clients: 0 },
+        rules_groups: syncRules.orderGroups?.length || 0
+    });
+});
+
+app.post('/api/auth/register', authRateLimiter, async (req, res) => {
     try {
         const { username, password } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Укажите username и password' });
+        }
         const hashedPassword = await bcrypt.hash(password, 10);
         const userId = uuidv4();
         const now = Date.now();
@@ -148,7 +187,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authRateLimiter, async (req, res) => {
     const { username, password } = req.body;
     const user = await db.get('SELECT * FROM users WHERE username = ? AND is_active = 1', username);
 
@@ -179,6 +218,21 @@ function authenticate(req, res, next) {
         res.status(401).json({ error: 'Неверный токен' });
     }
 }
+
+app.get('/api/sync/rules', authenticate, (req, res) => {
+    res.json({
+        ...getSyncRules(),
+        timestamp: Date.now()
+    });
+});
+
+app.post('/api/sync/rules/reload', authenticate, (req, res) => {
+    const rules = reloadSyncRules();
+    if (wsServer) {
+        wsServer.broadcastSyncRules(rules);
+    }
+    res.json({ success: true, order_groups: rules.orderGroups?.length || 0 });
+});
 
 app.get('/api/user/info', authenticate, async (req, res) => {
     const userId = req.user.userId;
@@ -233,21 +287,48 @@ app.get('/api/stats', authenticate, async (req, res) => {
     });
 });
 
+function warnInsecureProductionConfig() {
+    if (config.nodeEnv !== 'production') return;
+
+    if (config.jwtSecret === config.defaultJwtSecret) {
+        console.warn('⚠️  JWT_SECRET не задан — используется небезопасное значение по умолчанию');
+    }
+    if (!config.ssl.enabled) {
+        console.warn('⚠️  SSL не настроен — для production используйте SSL_CERT_PATH/SSL_KEY_PATH или reverse proxy');
+    }
+}
+
+function createHttpServer() {
+    if (config.ssl.enabled) {
+        const credentials = {
+            cert: fs.readFileSync(config.ssl.certPath),
+            key: fs.readFileSync(config.ssl.keyPath)
+        };
+        return https.createServer(credentials, app);
+    }
+    return http.createServer(app);
+}
+
 async function startServer() {
     await initDatabase();
+    warnInsecureProductionConfig();
 
     wsServer = new WebSocketServer();
     wsServer.start();
 
-    registerFileRoutes(app, { db, config, syncRules, upload, authenticate, wsServer });
+    registerFileRoutes(app, { db, config, getSyncRules, upload, authenticate, wsServer });
 
-    app.listen(PORT, () => {
+    const server = createHttpServer();
+    server.listen(PORT, () => {
+        const protocol = config.ssl.enabled ? 'https' : 'http';
+        const wsScheme = config.ssl.enabled ? 'wss' : 'ws';
         console.log(`
     ═══════════════════════════════════════════════════════════
-    ☁️  Облачный файловый сервис с WebSocket поддержкой
+    ☁️  Cloud Sync Server (${config.nodeEnv})
     ═══════════════════════════════════════════════════════════
-    📡 HTTP сервер:     http://localhost:${PORT}
-    🔌 WebSocket:       ws://localhost:${config.wsPort || 3001}
+    📡 HTTP API:        ${protocol}://localhost:${PORT}
+    🔌 WebSocket:       ${wsScheme}://localhost:${config.wsPort}
+    ❤️  Health:          ${protocol}://localhost:${PORT}/api/health
     💾 База данных:     ${config.database}
     📁 Хранилище:       ${config.storage.files}
     ⚙️  Правила:         ${syncRules.orderGroups?.length || 0} групп

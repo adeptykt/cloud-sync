@@ -1,40 +1,13 @@
+const {
+    normalizePath,
+    findOrderGroup,
+    resolveUploadStatus
+} = require('../sync-rules-engine');
+
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs-extra');
 const path = require('path');
 const crypto = require('crypto');
-
-function normalizePath(filePath) {
-    if (!filePath) return '/';
-    return filePath.startsWith('/') ? filePath : `/${filePath}`;
-}
-
-function isFlagFile(filePath) {
-    return filePath.endsWith('.flag') || filePath.endsWith('.ready');
-}
-
-function getDataPathForFlag(filePath) {
-    if (filePath.endsWith('.flag')) {
-        return filePath.slice(0, -'.flag'.length);
-    }
-    if (filePath.endsWith('.ready')) {
-        return filePath.slice(0, -'.ready'.length);
-    }
-    return filePath;
-}
-
-function findOrderGroup(filePath, syncRules) {
-    const fileName = path.basename(filePath);
-    for (const group of syncRules.orderGroups || []) {
-        const patterns = (group.pattern || '').split(',').map(p => p.trim()).filter(Boolean);
-        for (const pattern of patterns) {
-            const regex = new RegExp('^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i');
-            if (regex.test(fileName)) {
-                return group;
-            }
-        }
-    }
-    return null;
-}
 
 async function getUserRoot(db, config, userId) {
     const user = await db.get('SELECT root_folder FROM users WHERE id = ?', userId);
@@ -57,37 +30,16 @@ async function fileExistsForUser(db, userId, filePath) {
     return !!file;
 }
 
-async function resolveUploadStatus(db, userId, filePath, syncRules, syncGroupId) {
-    const normalized = normalizePath(filePath);
-    const group = findOrderGroup(normalized, syncRules);
-
-    if (group?.action === 'data_before_flag' && isFlagFile(normalized)) {
-        const dataPath = getDataPathForFlag(normalized);
-        const dataReady = await fileExistsForUser(db, userId, dataPath);
-        if (!dataReady) {
-            return { syncStatus: 'waiting', syncGroupId: syncGroupId || group.id };
-        }
-    }
-
-    if (group?.action === 'sequential' && Array.isArray(group.order)) {
-        const fileName = path.basename(normalized);
-        const fileIndex = group.order.indexOf(fileName);
-        if (fileIndex > 0) {
-            for (let i = 0; i < fileIndex; i += 1) {
-                const prevName = group.order[i];
-                const prevPath = path.posix.join(path.posix.dirname(normalized), prevName);
-                const prevReady = await fileExistsForUser(db, userId, prevPath);
-                if (!prevReady) {
-                    return { syncStatus: 'waiting', syncGroupId: syncGroupId || group.id };
-                }
-            }
-        }
-    }
-
-    return { syncStatus: 'ready', syncGroupId: syncGroupId || group?.id || null };
+async function resolveUploadStatusForUser(db, userId, filePath, syncRules, syncGroupId) {
+    return resolveUploadStatus(
+        filePath,
+        syncRules,
+        (p) => fileExistsForUser(db, userId, p),
+        syncGroupId
+    );
 }
 
-async function releaseWaitingFiles(db, config, userId, uploadedPath, syncRules, wsServer) {
+async function releaseWaitingFiles(db, config, userId, syncRules, wsServer) {
     const waitingFiles = await db.all(
         `SELECT * FROM user_files
          WHERE user_id = ? AND sync_status = 'waiting' AND is_deleted = 0`,
@@ -95,7 +47,7 @@ async function releaseWaitingFiles(db, config, userId, uploadedPath, syncRules, 
     );
 
     for (const waitingFile of waitingFiles) {
-        const { syncStatus } = await resolveUploadStatus(
+        const { syncStatus } = await resolveUploadStatusForUser(
             db,
             userId,
             waitingFile.path,
@@ -137,7 +89,7 @@ async function releaseWaitingFiles(db, config, userId, uploadedPath, syncRules, 
     }
 }
 
-function registerFileRoutes(app, { db, config, syncRules, upload, authenticate, wsServer }) {
+function registerFileRoutes(app, { db, config, getSyncRules, upload, authenticate, wsServer }) {
     const getChanges = async (req, res) => {
         const since = Number(req.query.since || 0);
         const userId = req.user.userId;
@@ -171,6 +123,7 @@ function registerFileRoutes(app, { db, config, syncRules, upload, authenticate, 
             const uploadedFile = req.file;
             const userId = req.user.userId;
             const syncGroupId = req.body.syncGroup || null;
+            const syncRules = getSyncRules();
 
             if (!uploadedFile) {
                 return res.status(400).json({ error: 'Файл не загружен' });
@@ -183,7 +136,7 @@ function registerFileRoutes(app, { db, config, syncRules, upload, authenticate, 
             const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
             const now = Date.now();
             const userRoot = await getUserRoot(db, config, userId);
-            const { syncStatus, syncGroupId: resolvedGroupId } = await resolveUploadStatus(
+            const { syncStatus, syncGroupId: resolvedGroupId } = await resolveUploadStatusForUser(
                 db,
                 userId,
                 filePath,
@@ -261,7 +214,7 @@ function registerFileRoutes(app, { db, config, syncRules, upload, authenticate, 
                     size: uploadedFile.size,
                     timestamp: now
                 });
-                await releaseWaitingFiles(db, config, userId, filePath, syncRules, wsServer);
+                await releaseWaitingFiles(db, config, userId, syncRules, wsServer);
             }
 
             res.json({
@@ -372,15 +325,18 @@ function registerFileRoutes(app, { db, config, syncRules, upload, authenticate, 
     };
 
     app.get('/api/files/changes', authenticate, getChanges);
-    app.get('/api/user/changes', authenticate, getChanges);
     app.get('/api/files/check', authenticate, checkFile);
+    app.get('/api/files/list', authenticate, listFiles);
     app.post('/api/files/upload', authenticate, upload.single('file'), uploadFile);
-    app.post('/api/user/upload', authenticate, upload.single('file'), uploadFile);
     app.get('/api/files/download/*', authenticate, downloadFile);
-    app.get('/api/user/download/*', authenticate, downloadFile);
     app.delete('/api/files/delete/*', authenticate, deleteFile);
-    app.delete('/api/user/delete/*', authenticate, deleteFile);
-    app.get('/api/user/files', authenticate, listFiles);
 }
 
-module.exports = { registerFileRoutes, getUserRoot, normalizePath };
+module.exports = {
+    registerFileRoutes,
+    getUserRoot,
+    normalizePath,
+    fileExistsForUser,
+    resolveUploadStatusForUser,
+    releaseWaitingFiles
+};

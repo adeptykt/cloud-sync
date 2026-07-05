@@ -171,14 +171,28 @@ public class SyncService : ServiceBase
             var root = doc.RootElement;
 
             JsonElement changeElement;
-            if (root.TryGetProperty("change", out changeElement))
+            if (root.TryGetProperty("type", out var typeElement))
             {
-                // { type: "file_change", change: { ... } }
-            }
-            else if (root.TryGetProperty("type", out var typeElement) &&
-                     typeElement.GetString() is "latest_changes" or "changes")
-            {
-                return;
+                var messageType = typeElement.GetString();
+                if (messageType == "sync_rules" && root.TryGetProperty("rules", out var rulesElement))
+                {
+                    var rules = rulesElement.Deserialize<ServerSyncRulesDocument>(JsonOptions);
+                    if (rules != null)
+                        _syncEngine.UpdateSyncRules(rules);
+                    return;
+                }
+
+                if (messageType is "latest_changes" or "changes" or "welcome" or "auth_success" or "pong")
+                    return;
+
+                if (messageType == "file_change" && root.TryGetProperty("change", out changeElement))
+                {
+                    // wrapped file change
+                }
+                else
+                {
+                    return;
+                }
             }
             else
             {

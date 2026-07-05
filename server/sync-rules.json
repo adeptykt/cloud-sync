@@ -30,6 +30,7 @@
         "data.bin",
         "data.ready"
       ],
+      "pattern": "*.json,*.bin,*.ready",
       "action": "sequential",
       "order": ["config.json", "data.bin", "data.ready"],
       "description": "Строгий порядок загрузки файлов"

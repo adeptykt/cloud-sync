@@ -19,6 +19,8 @@ public class SyncEngine
     private bool _isRunning;
     private string _authToken;
     private long _lastSyncTime;
+    private ServerSyncRulesDocument _serverRules = new();
+    private bool _serverRulesLoaded;
 
     public SyncEngine(SyncConfig config, Action<string> logger, WebSocketClient webSocket)
     {
@@ -47,6 +49,7 @@ public class SyncEngine
         {
             // Аутентификация
             await Authenticate();
+            await LoadSyncRulesFromServer();
             await _webSocket.ConnectAsync();
             
             // Запускаем периодическую синхронизацию
@@ -108,6 +111,38 @@ public class SyncEngine
         {
             _logger($"Ошибка аутентификации: {ex.Message}");
             throw;
+        }
+    }
+
+    public void UpdateSyncRules(ServerSyncRulesDocument rules)
+    {
+        if (rules == null) return;
+        _serverRules = rules;
+        _serverRulesLoaded = true;
+        _logger($"Правила синхронизации обновлены: {rules.OrderGroups?.Count ?? 0} групп");
+    }
+
+    private async Task LoadSyncRulesFromServer()
+    {
+        try
+        {
+            var response = await _httpClient.GetAsync($"{_config.ServerUrl}/api/sync/rules");
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger($"Не удалось загрузить правила с сервера: {response.StatusCode}");
+                return;
+            }
+
+            var rules = JsonSerializer.Deserialize<ServerSyncRulesDocument>(
+                await response.Content.ReadAsStringAsync(), JsonOptions);
+            if (rules != null)
+            {
+                UpdateSyncRules(rules);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger($"Ошибка загрузки правил: {ex.Message}");
         }
     }
 
@@ -478,77 +513,86 @@ public class SyncEngine
     {
         var rule = GetSyncRule(filePath);
         if (rule == null || !rule.Enabled) return true;
-        
+
         if (rule.OrderType == SyncOrderType.DataBeforeFlag)
         {
-            var isFlag = Path.GetExtension(filePath) == ".flag" || 
-                        Path.GetExtension(filePath) == ".ready" ||
-                        filePath.EndsWith(".flag") || 
-                        filePath.EndsWith(".ready");
-            
+            var isFlag = filePath.EndsWith(".flag") || filePath.EndsWith(".ready");
             if (isFlag)
             {
-                // Проверяем существование файла данных
-                var dataFile = filePath.Replace(".flag", "").Replace(".ready", "");
-                var dataPath = Path.Combine(_config.SyncFolder, dataFile);
-                
-                if (!File.Exists(dataPath))
-                {
-                    // Проверяем на сервере
-                    try
-                    {
-                        var response = await _httpClient.GetAsync(
-                            $"{_config.ServerUrl}/api/files/check?path={Uri.EscapeDataString(dataFile.TrimStart('/'))}");
-                        var exists = await response.Content.ReadAsStringAsync();
-                        if (exists != "true")
-                        {
-                            return false;
-                        }
-                    }
-                    catch
-                    {
-                        return false;
-                    }
-                }
+                var dataFile = filePath.EndsWith(".flag")
+                    ? filePath[..^".flag".Length]
+                    : filePath[..^".ready".Length];
+                if (!await IsDependencyReadyAsync(dataFile))
+                    return false;
             }
         }
-        
+
         if (rule.OrderType == SyncOrderType.Sequential && rule.SequentialOrder.Any())
         {
             var fileName = Path.GetFileName(filePath);
             var fileIndex = rule.SequentialOrder.IndexOf(fileName);
-            
+
             if (fileIndex > 0)
             {
-                // Проверяем, загружены ли предыдущие файлы
                 for (int i = 0; i < fileIndex; i++)
                 {
-                    var prevFile = rule.SequentialOrder[i];
-                    var prevPath = Path.Combine(Path.GetDirectoryName(filePath), prevFile);
-                    
-                    if (!File.Exists(prevPath))
-                    {
+                    var prevRelative = CombineRelativePath(filePath, rule.SequentialOrder[i]);
+                    if (!await IsDependencyReadyAsync(prevRelative))
                         return false;
-                    }
                 }
             }
         }
-        
+
         return true;
+    }
+
+    private async Task<bool> IsDependencyReadyAsync(string relativePath)
+    {
+        var normalized = relativePath.StartsWith('/') ? relativePath : "/" + relativePath;
+        var localPath = Path.Combine(_config.SyncFolder, normalized.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+        if (File.Exists(localPath))
+            return true;
+
+        try
+        {
+            var response = await _httpClient.GetAsync(
+                $"{_config.ServerUrl}/api/files/check?path={Uri.EscapeDataString(normalized.TrimStart('/'))}");
+            if (!response.IsSuccessStatusCode)
+                return false;
+            return (await response.Content.ReadAsStringAsync()) == "true";
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string CombineRelativePath(string filePath, string fileName)
+    {
+        var normalized = filePath.Replace('\\', '/');
+        var dir = Path.GetDirectoryName(normalized.TrimStart('/'))?.Replace('\\', '/');
+        if (string.IsNullOrEmpty(dir))
+            return "/" + fileName;
+        return "/" + dir + "/" + fileName;
     }
 
     private SyncRule GetSyncRule(string filePath)
     {
-        // Сначала проверяем пользовательские правила
-        var userRule = _config.CustomRules?.FirstOrDefault(r => 
-            r.Enabled && 
-            (r.FilePattern == "*" || 
-             Path.GetFileName(filePath).Contains(r.FilePattern) ||
-             filePath.EndsWith(r.FilePattern)));
-        
-        if (userRule != null) return userRule;
-        
-        // Стандартные правила
+        var serverRule = FindServerRule(filePath);
+        if (serverRule != null)
+            return serverRule;
+
+        if (!_serverRulesLoaded)
+        {
+            var userRule = _config.CustomRules?.FirstOrDefault(r =>
+                r.Enabled &&
+                (r.FilePattern == "*" ||
+                 Path.GetFileName(filePath).Contains(r.FilePattern) ||
+                 filePath.EndsWith(r.FilePattern)));
+            if (userRule != null)
+                return userRule;
+        }
+
         if (filePath.EndsWith(".flag") || filePath.EndsWith(".ready"))
         {
             return new SyncRule
@@ -560,9 +604,53 @@ public class SyncEngine
                 FilePattern = "*.flag,*.ready"
             };
         }
-        
+
         return null;
     }
+
+    private SyncRule FindServerRule(string filePath)
+    {
+        var group = FindServerOrderGroup(filePath);
+        if (group == null) return null;
+
+        return new SyncRule
+        {
+            Id = group.Id,
+            Name = group.Name,
+            Description = group.Description,
+            Enabled = true,
+            FilePattern = group.Pattern,
+            OrderType = MapActionToOrderType(group.Action),
+            SequentialOrder = group.Order ?? new List<string>()
+        };
+    }
+
+    private ServerOrderGroup FindServerOrderGroup(string filePath)
+    {
+        var fileName = Path.GetFileName(filePath);
+        foreach (var group in _serverRules.OrderGroups ?? new List<ServerOrderGroup>())
+        {
+            foreach (var pattern in (group.Pattern ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (MatchesPattern(fileName, pattern))
+                    return group;
+            }
+        }
+        return null;
+    }
+
+    private static bool MatchesPattern(string fileName, string pattern)
+    {
+        var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern).Replace("\\*", ".*") + "$";
+        return System.Text.RegularExpressions.Regex.IsMatch(fileName, regex, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    private static SyncOrderType MapActionToOrderType(string action) => action switch
+    {
+        "data_before_flag" => SyncOrderType.DataBeforeFlag,
+        "sequential" => SyncOrderType.Sequential,
+        _ => SyncOrderType.Immediate
+    };
 
     private int GetFilePriority(string filePath)
     {

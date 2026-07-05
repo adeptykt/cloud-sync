@@ -21,6 +21,7 @@ jobs:
           node-version: 20
 
       - run: npm install
+      - run: npm test
       - run: node --check server.js
       - run: node --check websocket-server.js
       - run: node --check file-api.js

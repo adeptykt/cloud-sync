@@ -49,10 +49,18 @@ Installer\Install.bat
 
 ## Правила синхронизации
 
-Правила задаются в `server/sync-rules.json` и могут дублироваться в конфиге агента (`CustomRules`).
+**Единый источник правил — сервер:** `server/sync-rules.json`.
+
+- Агент загружает правила после логина: `GET /api/sync/rules`
+- Обновления рассылаются по WebSocket (`type: sync_rules`)
+- Локальные `CustomRules` используются только если сервер недоступен
+
+Типы правил:
 
 - **data_before_flag** — сначала файл данных (`.dat`, `.csv`), затем флаг (`.flag`, `.ready`)
 - **sequential** — строгий порядок файлов в группе
+
+Проверка зависимостей на клиенте и сервере выполняется через `/api/files/check` (локально + на сервере).
 
 ## Структура репозитория
 
@@ -68,16 +76,33 @@ cloud-sync/
 
 ## API
 
-Клиент использует эндпоинты `/api/files/*` (алиасы `/api/user/*`):
+Клиент использует эндпоинты `/api/files/*`:
 
 | Метод | Путь | Описание |
 |-------|------|----------|
 | POST | `/api/auth/login` | Аутентификация |
 | GET | `/api/files/changes?since=` | Изменения с timestamp |
 | GET | `/api/files/check?path=` | Проверка наличия файла (`true`/`false`) |
+| GET | `/api/files/list?path=` | Список файлов в папке |
 | POST | `/api/files/upload` | Загрузка (`file`, `filePath`) |
 | GET | `/api/files/download/*` | Скачивание |
 | DELETE | `/api/files/delete/*` | Удаление |
+| GET | `/api/sync/rules` | Правила порядка загрузки |
+| GET | `/api/health` | Health check (без auth) |
+
+## Production
+
+1. Скопируйте `server/.env.example` → `server/.env`
+2. Задайте `NODE_ENV=production` и длинный `JWT_SECRET`
+3. HTTPS: `SSL_CERT_PATH` + `SSL_KEY_PATH` или reverse proxy (nginx/Caddy)
+4. За reverse proxy: `TRUST_PROXY=true`
+5. Проверка: `GET /api/health`
+
+```bash
+cd server
+npm test
+npm start
+```
 
 ## Разработка
 

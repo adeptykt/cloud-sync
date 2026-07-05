@@ -490,6 +490,24 @@ class WebSocketServer {
         }
     }
 
+    broadcastSyncRules(rules) {
+        const message = JSON.stringify({
+            type: 'sync_rules',
+            rules,
+            timestamp: Date.now()
+        });
+
+        for (const [clientId, client] of this.clients) {
+            if (!client.authenticated) continue;
+            if (client.ws.readyState !== WebSocket.OPEN) continue;
+            try {
+                client.ws.send(message);
+            } catch (error) {
+                console.error(`✗ Ошибка рассылки правил клиенту ${clientId}:`, error);
+            }
+        }
+    }
+
     async sendLatestChanges(clientId) {
         const client = this.clients.get(clientId);
         if (!client || !client.authenticated) return;
