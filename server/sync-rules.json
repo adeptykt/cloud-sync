@@ -1,0 +1,40 @@
+{
+  "orderGroups": [
+    {
+      "id": "database-backup",
+      "name": "База данных 1С",
+      "files": [
+        "1c_dump.dat",
+        "1c_dump.flag"
+      ],
+      "pattern": "*.dat,*.flag",
+      "action": "data_before_flag",
+      "description": "Сначала загружается .dat, потом .flag"
+    },
+    {
+      "id": "exchange-order",
+      "name": "Обмен с Frontol",
+      "files": [
+        "prices.csv",
+        "prices.ready"
+      ],
+      "pattern": "*.csv,*.ready",
+      "action": "data_before_flag",
+      "description": "Сначала CSV с данными, потом файл-флаг"
+    },
+    {
+      "id": "multi-file-set",
+      "name": "Многофайловый набор",
+      "files": [
+        "config.json",
+        "data.bin",
+        "data.ready"
+      ],
+      "action": "sequential",
+      "order": ["config.json", "data.bin", "data.ready"],
+      "description": "Строгий порядок загрузки файлов"
+    }
+  ],
+  "defaultBehavior": "immediate",
+  "conflictResolution": "newest_wins"
+}

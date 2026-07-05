@@ -1,0 +1,35 @@
+# Build
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.dll
+*.exe
+*.pdb
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Server runtime
+server/storage/
+server/database/
+
+# IDE
+.vs/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Secrets
+.env
+*.env.local
+config.local.json
+
+# Logs
+*.log
