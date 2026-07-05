@@ -47,6 +47,7 @@ public class SyncEngine
         {
             // Аутентификация
             await Authenticate();
+            await _webSocket.ConnectAsync();
             
             // Запускаем периодическую синхронизацию
             _syncTimer = new System.Timers.Timer(_config.SyncIntervalSeconds * 1000);
@@ -95,6 +96,7 @@ public class SyncEngine
                 _authToken = result?["token"];
                 _httpClient.DefaultRequestHeaders.Authorization = 
                     new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _authToken);
+                _webSocket.SetAuthToken(_authToken);
                 _logger("Аутентификация успешна");
             }
             else

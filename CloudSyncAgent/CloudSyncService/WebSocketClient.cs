@@ -11,6 +11,7 @@ public class WebSocketClient
     private readonly Action<string> _logger;
     private ClientWebSocket _webSocket;
     private CancellationTokenSource _cts;
+    private string _authToken;
     private bool _isConnecting;
     private int _reconnectAttempts;
     private readonly int _maxReconnectAttempts = 10;
@@ -28,25 +29,42 @@ public class WebSocketClient
         _webSocket = new ClientWebSocket();
     }
 
+    public void SetAuthToken(string token) => _authToken = token;
+
     public async Task ConnectAsync()
     {
+        if (_isConnecting) return;
+
+        _isConnecting = true;
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+
         try
         {
-            // Подключаемся к WebSocket
-            var uri = new Uri($"ws://{_config.ServerUrl.Replace("http://", "").Replace("https://", "")}:{_config.WebSocketPort ?? 3001}");
+            if (_webSocket.State != WebSocketState.None)
+            {
+                _webSocket.Dispose();
+                _webSocket = new ClientWebSocket();
+            }
+
+            var host = _config.ServerUrl.Replace("http://", "").Replace("https://", "").TrimEnd('/');
+            var uri = new Uri($"ws://{host}:{_config.WebSocketPort}");
             await _webSocket.ConnectAsync(uri, _cts.Token);
             
-            // Отправляем аутентификацию
-            var authMessage = new
+            if (!string.IsNullOrEmpty(_authToken))
             {
-                type = "auth",
-                token = _authToken,
-                deviceId = Environment.MachineName
-            };
-            
-            await SendMessageAsync(JsonSerializer.Serialize(authMessage));
+                var authMessage = new
+                {
+                    type = "auth",
+                    token = _authToken,
+                    deviceId = Environment.MachineName
+                };
+                
+                await SendMessageAsync(JsonSerializer.Serialize(authMessage));
+            }
             
             IsConnected = true;
+            _reconnectAttempts = 0;
             _logger("WebSocket подключён и аутентифицирован");
             OnConnected?.Invoke();
             
@@ -56,6 +74,10 @@ public class WebSocketClient
         {
             _logger($"Ошибка подключения WebSocket: {ex.Message}");
             await ReconnectAsync();
+        }
+        finally
+        {
+            _isConnecting = false;
         }
     }
 

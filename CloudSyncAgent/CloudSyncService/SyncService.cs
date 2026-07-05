@@ -57,7 +57,6 @@ public class SyncService : ServiceBase
             _fileWatcher.OnFileRenamed += async (oldPath, newPath) => await _syncEngine.OnFileRenamed(oldPath, newPath);
             
             // Запускаем все компоненты
-            _webSocketClient.ConnectAsync().Wait();
             _syncEngine.Start();
             _fileWatcher.Start();
             

@@ -9,7 +9,8 @@
     <Company>YourCompany</Company>
     <Product>CloudSync Agent</Product>
     <Description>Облачная синхронизация файлов с поддержкой порядка загрузки</Description>
-    <Version>2.0.0</Version>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>

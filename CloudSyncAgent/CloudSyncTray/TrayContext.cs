@@ -77,9 +77,7 @@ public class TrayContext : ApplicationContext
     private void UpdateStatus()
     {
         var status = GetServiceStatus();
-        var icon = status == "Running" ? Properties.Resources.sync_on : Properties.Resources.sync_off;
-        
-        _trayIcon.Icon = icon;
+        _trayIcon.Icon = GetAppIcon(status == "Running");
         _trayIcon.Text = $"CloudSync Agent\nСтатус: {status}\nПапка: {_config.SyncFolder}";
     }
 
@@ -205,13 +203,12 @@ public class TrayContext : ApplicationContext
         }
     }
 
-    private Icon GetAppIcon()
+    private Icon GetAppIcon(bool isRunning = true)
     {
-        // Создаём простую иконку программно
         using var bitmap = new System.Drawing.Bitmap(16, 16);
         using var g = Graphics.FromImage(bitmap);
-        g.Clear(Color.Blue);
-        g.DrawString("☁", new Font("Segoe UI", 10), Brushes.White, 2, 0);
+        g.Clear(isRunning ? Color.FromArgb(0, 120, 215) : Color.Gray);
+        g.FillEllipse(Brushes.White, 3, 3, 10, 10);
         return Icon.FromHandle(bitmap.GetHicon());
     }
 }

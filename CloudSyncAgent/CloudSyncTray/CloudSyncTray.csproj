@@ -9,8 +9,8 @@
     <Company>YourCompany</Company>
     <Product>CloudSync Agent</Product>
     <Description>Трей-приложение для управления синхронизацией</Description>
-    <Version>2.0.0</Version>
-    <ApplicationIcon>Resources\icon.ico</ApplicationIcon>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
@@ -34,15 +34,6 @@
     <Compile Update="LogForm.Designer.cs">
       <DependentUpon>LogForm.cs</DependentUpon>
     </Compile>
-  </ItemGroup>
-
-  <ItemGroup>
-    <EmbeddedResource Update="SettingsForm.resx">
-      <DependentUpon>SettingsForm.cs</DependentUpon>
-    </EmbeddedResource>
-    <EmbeddedResource Update="LogForm.resx">
-      <DependentUpon>LogForm.cs</DependentUpon>
-    </EmbeddedResource>
   </ItemGroup>
 
 </Project>
